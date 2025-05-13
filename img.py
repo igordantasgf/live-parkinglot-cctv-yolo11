@@ -10,7 +10,7 @@ while cpt < maxFrames:
     frame = stream.read()
     frame=cv2.resize(frame,(1020,500))
     cv2.imshow("test window", frame) # show image in window
-    cv2.imwrite(r"C:\Users\freed\Downloads\yolo11-parkinglot-main\yolo11-parkinglot-main/img_%d.jpg" %cpt, frame)
+    cv2.imwrite(r"C:\Users\Igor\Documents\Material Faculdade\TCC\live-parkinglot-cctv-yolo11/img_%d.jpg" %cpt, frame)
     cpt += 1
     if cv2.waitKey(5)&0xFF==27:
         break

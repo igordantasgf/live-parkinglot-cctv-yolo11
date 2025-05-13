@@ -1,5 +1,6 @@
 import cv2
 from vidgear.gears import CamGear
+import numpy as np
 
 from parking import ParkingManagement
 
@@ -12,7 +13,7 @@ stream = CamGear(source='https://www.youtube.com/watch?v=EPKWu223XEg', stream_mo
 # Initialize parking management object
 parking_manager =  ParkingManagement(
     model="yolo11n.pt",# path to model file
-    classes=[2],
+    classes=[0, 2],  # 0 para pedestres, 2 para carros
     json_file="bounding_boxes.json",  # path to parking annotations file
 )
 count=0
@@ -28,3 +29,5 @@ while True:
         break
 cap.release()
 cv2.destroyAllWindows()
+
+matched_indices = np.array(matched_indices).T  # Transpõe a matriz para o formato correto

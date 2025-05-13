@@ -5,6 +5,7 @@ import numpy as np
 
 from ultralytics.solutions.solutions import LOGGER, BaseSolution, check_requirements
 from ultralytics.utils.plotting import Annotator
+from deep_sort import DeepSORT
 
 
 class ParkingPtsSelection:
@@ -148,26 +149,6 @@ class ParkingPtsSelection:
 class ParkingManagement(BaseSolution):
     """
     Manages parking occupancy and availability using YOLO model for real-time monitoring and visualization.
-
-    This class extends BaseSolution to provide functionality for parking lot management, including detection of
-    occupied spaces, visualization of parking regions, and display of occupancy statistics.
-
-    Attributes:
-        json_file (str): Path to the JSON file containing parking region details.
-        json (List[Dict]): Loaded JSON data containing parking region information.
-        pr_info (Dict[str, int]): Dictionary storing parking information (Occupancy and Available spaces).
-        arc (Tuple[int, int, int]): RGB color tuple for available region visualization.
-        occ (Tuple[int, int, int]): RGB color tuple for occupied region visualization.
-        dc (Tuple[int, int, int]): RGB color tuple for centroid visualization of detected objects.
-
-    Methods:
-        process_data: Processes model data for parking lot management and visualization.
-
-    Examples:
-        >>> from ultralytics.solutions import ParkingManagement
-        >>> parking_manager = ParkingManagement(model="yolov8n.pt", json_file="parking_regions.json")
-        >>> print(f"Occupied spaces: {parking_manager.pr_info['Occupancy']}")
-        >>> print(f"Available spaces: {parking_manager.pr_info['Available']}")
     """
 
     def __init__(self, **kwargs):
@@ -187,47 +168,186 @@ class ParkingManagement(BaseSolution):
         self.arc = (0, 255, 0)  # available region color
         self.occ = (0, 0, 255)  # occupied region color
         self.dc = (255, 0, 189)  # centroid color for each box
+        
+        # Inicializa o DeepSORT para tracking de pedestres e veículos
+        self.pedestrian_tracker = DeepSORT(max_age=30, min_hits=3, iou_threshold=0.3)
+        self.vehicle_tracker = DeepSORT(max_age=30, min_hits=3, iou_threshold=0.3)
+        
+        # Cores para bounding boxes
+        self.pedestrian_color = (0, 255, 255)  # Amarelo
+        self.pedestrian_danger_color = (255, 192, 203)  # Rosa
+        self.vehicle_color = (255, 0, 0)  # Azul
+        self.vehicle_parked_color = (0, 0, 255)  # Vermelho
+
+    def check_intersection(self, ped_box, car_box):
+        """
+        Verifica se há interseção entre a bounding box do pedestre e do veículo
+        """
+        x1 = max(ped_box[0], car_box[0])
+        y1 = max(ped_box[1], car_box[1])
+        x2 = min(ped_box[2], car_box[2])
+        y2 = min(ped_box[3], car_box[3])
+        
+        if x1 < x2 and y1 < y2:
+            return True
+        return False
+
+    def is_in_parking_spot(self, box, region_points):
+        """
+        Verifica se um veículo está em uma vaga de estacionamento
+        """
+        x1, y1, x2, y2 = box
+        xc, yc = int((x1 + x2) / 2), int((y1 + y2) / 2)
+        pts_array = np.array(region_points, dtype=np.int32).reshape((-1, 1, 2))
+        return cv2.pointPolygonTest(pts_array, (xc, yc), False) >= 0
 
     def process_data(self, im0):
         """
         Processes the model data for parking lot management.
 
         This function analyzes the input image, extracts tracks, and determines the occupancy status of parking
-        regions defined in the JSON file. It annotates the image with occupied and available parking spots,
-        and updates the parking information.
+        regions defined in the JSON file. It also checks if detected cars are within the free_area.
 
         Args:
             im0 (np.ndarray): The input inference image.
 
-        Examples:
-            >>> parking_manager = ParkingManagement(json_file="parking_regions.json")
-            >>> image = cv2.imread("parking_lot.jpg")
-            >>> parking_manager.process_data(image)
+        Returns:
+            np.ndarray: The annotated image.
         """
         self.extract_tracks(im0)  # extract tracks from im0
-        es, fs = len(self.json), 0  # empty slots, filled slots
+        es, fs = 0, 0  # empty slots, filled slots
         annotator = Annotator(im0, self.line_width)  # init annotator
 
+        # Load free_area from JSON
+        free_area = None
         for region in self.json:
+            if "free_area" in region:
+                free_area = np.array(region["free_area"], dtype=np.int32).reshape((-1, 1, 2))
+                break
+
+        cars_in_free_area = 0  # Counter for cars in the free_area
+        
+        # Separa detecções de carros e pedestres
+        car_boxes = []
+        pedestrian_boxes = []
+        
+        for box, cls in zip(self.boxes, self.clss):
+            x1, y1, x2, y2 = map(int, box)
+            if cls == 2:  # Carro
+                car_boxes.append([x1, y1, x2, y2])
+            elif cls == 0:  # Pedestre
+                pedestrian_boxes.append([x1, y1, x2, y2])
+
+        # Atualiza o DeepSORT para veículos
+        if car_boxes:
+            car_boxes = np.array(car_boxes)
+            tracked_vehicles = self.vehicle_tracker.update(car_boxes, [])
+            
+            # Desenha as bounding boxes dos veículos
+            for track in tracked_vehicles:
+                x1, y1, x2, y2, track_id = map(int, track)
+                
+                # Verifica se o veículo está em uma vaga
+                is_parked = False
+                for region in self.json:
+                    if "points" in region and self.is_in_parking_spot([x1, y1, x2, y2], region["points"]):
+                        is_parked = True
+                        break
+                
+                # Escolhe a cor baseada no estado do veículo
+                color = self.vehicle_parked_color if is_parked else self.vehicle_color
+                
+                # Desenha a bounding box
+                cv2.rectangle(im0, (x1, y1), (x2, y2), color, 2)
+                
+                # Adiciona o ID do tracker
+                cv2.putText(im0, f"V{track_id}", (x1, y1-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # Atualiza o DeepSORT para pedestres
+        if pedestrian_boxes:
+            pedestrian_boxes = np.array(pedestrian_boxes)
+            tracked_pedestrians = self.pedestrian_tracker.update(pedestrian_boxes, car_boxes)
+            
+            # Desenha as bounding boxes dos pedestres
+            for track in tracked_pedestrians:
+                x1, y1, x2, y2, track_id = map(int, track)
+                
+                # Verifica interseção com carros
+                is_intersecting = False
+                for car_box in car_boxes:
+                    if self.check_intersection([x1, y1, x2, y2], car_box):
+                        is_intersecting = True
+                        break
+                
+                # Escolhe a cor baseada na interseção
+                color = self.pedestrian_danger_color if is_intersecting else self.pedestrian_color
+                
+                # Desenha a bounding box
+                cv2.rectangle(im0, (x1, y1), (x2, y2), color, 2)
+                
+                # Adiciona o ID do tracker
+                cv2.putText(im0, f"P{track_id}", (x1, y1-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # Count cars in the free_area
+        for track in tracked_vehicles if 'tracked_vehicles' in locals() else []:
+            x1, y1, x2, y2, _ = map(int, track)
+            xc, yc = int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+            # Check if the car is inside the free_area
+            if free_area is not None:
+                if cv2.pointPolygonTest(free_area, (xc, yc), False) >= 0:
+                    cars_in_free_area += 1
+
+        # Process parking regions (excluding free_area)
+        for region in self.json:
+            if "points" not in region:  # Skip regions without "points"
+                continue
+
             # Convert points to a NumPy array with the correct dtype and reshape properly
             pts_array = np.array(region["points"], dtype=np.int32).reshape((-1, 1, 2))
             rg_occupied = False  # occupied region initialization
-            for box, cls in zip(self.boxes, self.clss):
-                xc, yc = int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2)
-                dist = cv2.pointPolygonTest(pts_array, (xc, yc), False)
-                if dist >= 0:
-                    cv2.circle(im0, (xc, yc), radius=self.line_width * 2, color=self.dc, thickness=-1)
-#                    annotator.display_objects_labels(
-#                        im0, self.model.names[int(cls)], (104, 31, 17), (255, 255, 255), xc, yc+20, 10
-#                    )
+            
+            # Verifica se algum veículo está na vaga
+            for track in tracked_vehicles if 'tracked_vehicles' in locals() else []:
+                x1, y1, x2, y2, _ = map(int, track)
+                if self.is_in_parking_spot([x1, y1, x2, y2], region["points"]):
                     rg_occupied = True
                     break
+                    
             fs, es = (fs + 1, es - 1) if rg_occupied else (fs, es)
             # Plotting regions
             cv2.polylines(im0, [pts_array], isClosed=True, color=self.occ if rg_occupied else self.arc, thickness=2)
 
-        self.pr_info["Occupancy"], self.pr_info["Available"] = fs, es
+        self.pr_info["Occupancy"], self.pr_info["Available"] = fs, len([region for region in self.json if "points" in region]) - fs
 
-        annotator.display_analytics(im0, self.pr_info, (104, 31, 17), (255, 255, 255), 10)
+        # Display parking information
+        cv2.putText(
+            im0,
+            f"Occupied: {self.pr_info['Occupancy']}, Available: {self.pr_info['Available']}",
+            (10, 30),  # Position on the image
+            cv2.FONT_HERSHEY_SIMPLEX,  # Font
+            1,  # Font scale
+            (104, 31, 17),  # Text color
+            2,  # Thickness
+            cv2.LINE_AA,  # Line type
+        )
+
+        # Display cars in free_area
+        if free_area is not None:
+            cv2.putText(
+                im0,
+                f"Cars in Free Area: {cars_in_free_area}",
+                (10, 60),  # Position on the image
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 0),  # Text color
+                2,
+                cv2.LINE_AA,
+            )
+            # Draw the free_area polygon
+            cv2.polylines(im0, [free_area], isClosed=True, color=(0, 255, 0), thickness=2)
+
         self.display_output(im0)  # display output with base class function
         return im0  # return output image for more usage
