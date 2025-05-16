@@ -1,4 +1,5 @@
 import json
+import time  # Importa o módulo para rastrear o tempo
 
 import cv2
 import numpy as np
@@ -179,6 +180,10 @@ class ParkingManagement(BaseSolution):
         self.vehicle_color = (255, 0, 0)  # Azul
         self.vehicle_parked_color = (0, 0, 255)  # Vermelho
 
+        self.car_timers = {}  # Dicionário para rastrear o tempo de cada veículo na free_area
+        self.car_moving_indices = {}  # Dicionário para armazenar o índice de cada veículo
+        self.T = 5  # Tempo inicial em segundos antes de começar a incrementar o índice
+
     def check_intersection(self, ped_box, car_box):
         """
         Verifica se há interseção entre a bounding box do pedestre e do veículo
@@ -246,7 +251,39 @@ class ParkingManagement(BaseSolution):
             # Desenha as bounding boxes dos veículos
             for track in tracked_vehicles:
                 x1, y1, x2, y2, track_id = map(int, track)
-                
+                xc, yc = int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+                # Verifica se o veículo está na free_area
+                if free_area is not None and cv2.pointPolygonTest(free_area, (xc, yc), False) >= 0:
+                    if track_id not in self.car_timers:
+                        self.car_timers[track_id] = time.time()  # Inicia o timer para o veículo
+                        self.car_moving_indices[track_id] = 0  # Inicializa o índice do veículo
+                    else:
+                        elapsed_time = time.time() - self.car_timers[track_id]
+                        if elapsed_time > self.T:
+                            # Incrementa o índice com crescimento exponencial quadrático
+                            normalized_time = (elapsed_time - self.T) / self.T
+                            self.car_moving_indices[track_id] = min(1, normalized_time ** 2)
+                else:
+                    # Remove o veículo do dicionário se ele sair da free_area
+                    if track_id in self.car_timers:
+                        del self.car_timers[track_id]
+                        del self.car_moving_indices[track_id]
+
+                # Exibe o car_moving_index abaixo da bounding box
+                if track_id in self.car_moving_indices:
+                    car_index = self.car_moving_indices[track_id]
+                    cv2.putText(
+                        im0,
+                        f"Index: {car_index:.2f}",
+                        (x1, y2 + 15),  # Posição abaixo da bounding box
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,  # Escala da fonte
+                        (255, 255, 255),  # Cor do texto
+                        1,  # Espessura
+                        cv2.LINE_AA,
+                    )
+
                 # Verifica se o veículo está em uma vaga
                 is_parked = False
                 for region in self.json:
@@ -289,6 +326,66 @@ class ParkingManagement(BaseSolution):
                 # Adiciona o ID do tracker
                 cv2.putText(im0, f"P{track_id}", (x1, y1-10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # Constantes para o cálculo do índice
+        peso_car_moving = 0.8  # Peso do índice de movimento do carro
+        full_park_index = 0.05
+
+        # Lista para armazenar os índices calculados
+        vehicle_indices = []
+
+        # Atualiza o índice de cada veículo na free_area
+        for track in tracked_vehicles if 'tracked_vehicles' in locals() else []:
+            x1, y1, x2, y2, track_id = map(int, track)
+            xc, yc = int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+            # Verifica se o veículo está na free_area
+            if free_area is not None and cv2.pointPolygonTest(free_area, (xc, yc), False) >= 0:
+                if track_id not in self.car_timers:
+                    self.car_timers[track_id] = time.time()  # Inicia o timer para o veículo
+                    self.car_moving_indices[track_id] = 0  # Inicializa o índice do veículo
+                else:
+                    elapsed_time = time.time() - self.car_timers[track_id]
+                    if elapsed_time > self.T:
+                        # Incrementa o índice com crescimento exponencial quadrático
+                        normalized_time = (elapsed_time - self.T) / self.T
+                        self.car_moving_indices[track_id] = min(1, normalized_time ** 2)
+            else:
+                # Remove o veículo do dicionário se ele sair da free_area
+                if track_id in self.car_timers:
+                    del self.car_timers[track_id]
+                    del self.car_moving_indices[track_id]
+
+            # Calcula o índice final para o veículo
+            if track_id in self.car_moving_indices:
+                car_index = self.car_moving_indices[track_id]
+                free_slots_percentage = self.pr_info["Available"] / len([region for region in self.json if "points" in region])
+                if car_index > 0:
+                    # Calcula o tempo normalizado
+                    normalized_time = (time.time() - self.car_timers[track_id] - self.T) * car_index * peso_car_moving / self.T
+                    # Calcula o índice final com crescimento exponencial baseado na ocupação
+                    if free_slots_percentage == 0: # estacionamento cheio
+                        final_index = min(1, normalized_time ** (1 + full_park_index))
+                    else:
+                        final_index = min(1, (normalized_time ** (1 + free_slots_percentage)))
+                else:
+                    final_index = 0
+                vehicle_indices.append((track_id, final_index))
+
+        # Remove IDs de veículos que não estão mais na cena
+        active_ids = [int(track[4]) for track in tracked_vehicles] if 'tracked_vehicles' in locals() else []
+        self.car_timers = {k: v for k, v in self.car_timers.items() if k in active_ids}
+        self.car_moving_indices = {k: v for k, v in self.car_moving_indices.items() if k in active_ids}
+
+        # Desenha a tabela no canto superior direito
+        start_x, start_y = im0.shape[1] - 300, 10  # Posição inicial da tabela
+        row_height = 25
+        cv2.rectangle(im0, (start_x, start_y), (im0.shape[1] - 10, start_y + (len(vehicle_indices) + 1) * row_height), (50, 50, 50), -1)
+        cv2.putText(im0, "ID   Index", (start_x + 10, start_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+
+        for i, (track_id, final_index) in enumerate(vehicle_indices):
+            text = f"{track_id:<4} {final_index:.2f}"
+            cv2.putText(im0, text, (start_x + 10, start_y + (i + 2) * row_height), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
         # Count cars in the free_area
         for track in tracked_vehicles if 'tracked_vehicles' in locals() else []:

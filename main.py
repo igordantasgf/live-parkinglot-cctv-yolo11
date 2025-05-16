@@ -6,10 +6,6 @@ from parking import ParkingManagement
 
 stream = CamGear(source='https://www.youtube.com/watch?v=EPKWu223XEg', stream_mode = True, logging=True).start()
 
-
-
-
-
 # Initialize parking management object
 parking_manager =  ParkingManagement(
     model="yolo11n.pt",# path to model file

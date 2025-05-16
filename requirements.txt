@@ -4,3 +4,5 @@ numpy>=1.24.0
 scipy>=1.11.0
 filterpy>=1.4.5
 vidgear>=0.2.5 
+opencv-python
+yt_dlp
