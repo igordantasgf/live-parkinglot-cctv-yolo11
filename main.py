@@ -4,26 +4,52 @@ import numpy as np
 
 from parking import ParkingManagement
 
-stream = CamGear(source='https://www.youtube.com/watch?v=EPKWu223XEg', stream_mode = True, logging=True).start()
+video_path = "ufba_odonto.mp4"  # Substitua pelo caminho do vídeo se necessário
+# video_path = False
+if video_path:
+    stream = cv2.VideoCapture("/home/exati/Documentos/UFBA/live-parkinglot-cctv-yolo11/videos/" + video_path)
+else:
+    stream = CamGear(source='https://www.youtube.com/watch?v=EPKWu223XEg', stream_mode=True, logging=True).start()
 
 # Initialize parking management object
 parking_manager =  ParkingManagement(
     model="yolo11n.pt",# path to model file
     classes=[0, 2],  # 0 para pedestres, 2 para carros
-    json_file="bounding_boxes.json",  # path to parking annotations file
+    json_file=("/home/exati/Documentos/UFBA/live-parkinglot-cctv-yolo11/bboxes_videos/" + video_path + ".json") if video_path else "stream_bounding_boxes.json",  # path to parking annotations file
 )
-count=0
+
+def jump_to_time(stream, time_in_seconds):
+    if video_path:
+        fps = stream.get(cv2.CAP_PROP_FPS)  # Obtém o FPS do vídeo
+        frame_number = int(fps * time_in_seconds)  # Calcula o número do frame correspondente
+        stream.set(cv2.CAP_PROP_POS_FRAMES, frame_number)  # Redireciona para o frame
+        print(f"Redirecionado para {time_in_seconds} segundos.")
+
+count = 0
 while True:
-    im0 = stream.read()
+    if video_path:
+        ret, im0 = stream.read()
+        if not ret:
+            break
+    else:
+        im0 = stream.read()
+
     count += 1
     if count % 2 != 0:
         continue
-    im0=cv2.resize(im0,(1020,500))
+    im0 = cv2.resize(im0, (1020, 500))
     im0 = parking_manager.process_data(im0)
-    cv2.imshow("im0",im0)
-    if cv2.waitKey(1)&0xFF==27:
+    cv2.imshow("im0", im0)
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('j'):  
+        jump_to_time(stream, 100)  
+    if key == ord('k'):  
+        jump_to_time(stream, 250)  
+    elif key == 27:
         break
-cap.release()
-cv2.destroyAllWindows()
 
-matched_indices = np.array(matched_indices).T  # Transpõe a matriz para o formato correto
+if video_path:
+    stream.release()
+else:
+    stream.stop()
+cv2.destroyAllWindows()

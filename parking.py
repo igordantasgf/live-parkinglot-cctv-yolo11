@@ -147,6 +147,20 @@ class ParkingPtsSelection:
         self.messagebox.showinfo("Success", "Bounding boxes saved to bounding_boxes.json")
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class ParkingManagement(BaseSolution):
     """
     Manages parking occupancy and availability using YOLO model for real-time monitoring and visualization.
@@ -182,7 +196,7 @@ class ParkingManagement(BaseSolution):
 
         self.car_timers = {}  # Dicionário para rastrear o tempo de cada veículo na free_area
         self.car_moving_indices = {}  # Dicionário para armazenar o índice de cada veículo
-        self.T = 5  # Tempo inicial em segundos antes de começar a incrementar o índice
+        self.T = 20  # Tempo inicial em segundos antes de começar a incrementar o índice
 
     def check_intersection(self, ped_box, car_box):
         """
@@ -270,20 +284,6 @@ class ParkingManagement(BaseSolution):
                         del self.car_timers[track_id]
                         del self.car_moving_indices[track_id]
 
-                # Exibe o car_moving_index abaixo da bounding box
-                if track_id in self.car_moving_indices:
-                    car_index = self.car_moving_indices[track_id]
-                    cv2.putText(
-                        im0,
-                        f"Index: {car_index:.2f}",
-                        (x1, y2 + 15),  # Posição abaixo da bounding box
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.4,  # Escala da fonte
-                        (255, 255, 255),  # Cor do texto
-                        1,  # Espessura
-                        cv2.LINE_AA,
-                    )
-
                 # Verifica se o veículo está em uma vaga
                 is_parked = False
                 for region in self.json:
@@ -291,15 +291,17 @@ class ParkingManagement(BaseSolution):
                         is_parked = True
                         break
                 
-                # Escolhe a cor baseada no estado do veículo
-                color = self.vehicle_parked_color if is_parked else self.vehicle_color
-                
-                # Desenha a bounding box
-                cv2.rectangle(im0, (x1, y1), (x2, y2), color, 2)
-                
-                # Adiciona o ID do tracker
-                cv2.putText(im0, f"V{track_id}", (x1, y1-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                # Desenha a bounding box apenas se o veículo não estiver estacionado
+                if not is_parked:
+                    # Escolhe a cor baseada no estado do veículo
+                    color = self.vehicle_color
+                    
+                    # Desenha a bounding box
+                    cv2.rectangle(im0, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Adiciona o ID do tracker
+                    cv2.putText(im0, f"V{track_id}", (x1, y1-10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         # Atualiza o DeepSORT para pedestres
         if pedestrian_boxes:
