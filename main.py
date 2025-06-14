@@ -13,8 +13,8 @@ else:
 
 # Initialize parking management object
 parking_manager =  ParkingManagement(
-    model="yolo11n.pt",# path to model file
-    classes=[0, 2],  # 0 para pedestres, 2 para carros
+    model="yolo11s_visdrone.pt",# path to model file
+    classes=[0, 1, 3, 4, 5, 9],  # 0 para pedestres, 2 para carros
     json_file=("/home/exati/Documentos/UFBA/live-parkinglot-cctv-yolo11/bboxes_videos/" + video_path + ".json") if video_path else "stream_bounding_boxes.json",  # path to parking annotations file
 )
 
@@ -34,9 +34,9 @@ while True:
     else:
         im0 = stream.read()
 
-    count += 1
-    if count % 2 != 0:
-        continue
+    # count += 1
+    # if count % 2 != 0:
+    #     continue
     im0 = cv2.resize(im0, (1020, 500))
     im0 = parking_manager.process_data(im0)
     cv2.imshow("im0", im0)
