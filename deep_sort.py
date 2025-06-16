@@ -7,6 +7,10 @@ def iou_batch(bb_test, bb_gt):
     """
     Calcula o IoU entre duas bounding boxes
     """
+    # Verifica se algum dos arrays está vazio
+    if len(bb_test) == 0 or len(bb_gt) == 0:
+        return np.zeros((len(bb_test), len(bb_gt)))
+
     bb_gt = np.expand_dims(bb_gt, 0)
     bb_test = np.expand_dims(bb_test, 1)
     
@@ -149,12 +153,15 @@ class DeepSORT:
             return np.concatenate(ret)
         return np.empty((0,5))
 
-    def associate_detections_to_trackers(self, dets,trks,iou_threshold = 0.3):
+    def associate_detections_to_trackers(self, dets, trks, iou_threshold = 0.3):
         """
         Associa detecções com trackers usando IoU
         """
         if(len(trks)==0):
             return np.empty((0,2),dtype=int), np.arange(len(dets)), np.empty((0,5),dtype=int)
+        
+        if(len(dets)==0):
+            return np.empty((0,2),dtype=int), np.empty((0,),dtype=int), np.arange(len(trks))
 
         iou_matrix = iou_batch(dets, trks)
 

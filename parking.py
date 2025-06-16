@@ -198,6 +198,15 @@ class ParkingManagement(BaseSolution):
         self.car_moving_indices = {}  # Dicionário para armazenar o índice de cada veículo
         self.T = 20  # Tempo inicial em segundos antes de começar a incrementar o índice
 
+        # Sistema de detecção de velocidade
+        self.pedestrian_positions = {}  # Dicionário para armazenar posições anteriores
+        self.pedestrian_speeds = {}  # Dicionário para armazenar velocidades
+        self.fps = 11.5  # FPS real baseado nos dados de processamento (~87ms por frame)
+        self.speed_threshold = 15  # Limiar de velocidade em pixels por frame (ajustado para ~1.3 pixels por frame)
+        self.running_pedestrians = set()  # Conjunto de pedestres correndo
+        self.speed_history_size = 3  # Reduzido para 3 posições para ser mais responsivo
+        self.min_speed_duration = 5  # Número mínimo de frames para confirmar que está correndo
+
     def check_intersection(self, ped_box, car_box):
         """
         Verifica se há interseção entre a bounding box do pedestre e do veículo
@@ -220,6 +229,46 @@ class ParkingManagement(BaseSolution):
         pts_array = np.array(region_points, dtype=np.int32).reshape((-1, 1, 2))
         return cv2.pointPolygonTest(pts_array, (xc, yc), False) >= 0
 
+    def calculate_speed(self, track_id, current_pos):
+        """
+        Calcula a velocidade do pedestre em pixels por segundo
+        """
+        if track_id not in self.pedestrian_positions:
+            self.pedestrian_positions[track_id] = []
+            self.pedestrian_speeds[track_id] = 0
+            self.pedestrian_positions[track_id].append(current_pos)
+            return 0
+
+        # Adiciona a posição atual
+        self.pedestrian_positions[track_id].append(current_pos)
+        
+        # Mantém apenas as últimas N posições
+        if len(self.pedestrian_positions[track_id]) > self.speed_history_size:
+            self.pedestrian_positions[track_id].pop(0)
+
+        # Calcula a velocidade média usando as últimas posições
+        if len(self.pedestrian_positions[track_id]) >= 2:
+            positions = self.pedestrian_positions[track_id]
+            total_distance = 0
+            for i in range(1, len(positions)):
+                prev_pos = positions[i-1]
+                curr_pos = positions[i]
+                distance = np.sqrt((curr_pos[0] - prev_pos[0])**2 + (curr_pos[1] - prev_pos[1])**2)
+                total_distance += distance
+            
+            # Calcula a velocidade em pixels por segundo
+            avg_distance = total_distance / (len(positions) - 1)
+            speed = avg_distance * self.fps
+            
+            # Aplica um filtro de média móvel para suavizar as velocidades
+            if track_id in self.pedestrian_speeds:
+                speed = 0.7 * speed + 0.3 * self.pedestrian_speeds[track_id]
+            
+            self.pedestrian_speeds[track_id] = speed
+            return speed
+        
+        return 0
+
     def process_data(self, im0):
         """
         Processa os dados do modelo para gerenciar o estacionamento.
@@ -236,9 +285,7 @@ class ParkingManagement(BaseSolution):
         self.extract_tracks(im0)  # Realiza a inferência e extrai as detecções
         es, fs = 0, 0  # Vagas disponíveis e ocupadas
         annotator = Annotator(im0, self.line_width)  # Inicializa o anotador
-        vehicle_id = 1  # Inicializa o identificador para veículos
-        pedestrian_id = 1  # Inicializa o identificador para pedestres
-
+        
         # Carrega a free_area do JSON
         free_area = None
         for region in self.json:
@@ -251,13 +298,43 @@ class ParkingManagement(BaseSolution):
         # Separa detecções de veículos e pedestres
         vehicle_boxes = []
         pedestrian_boxes = []
+        vehicle_scores = []
+        pedestrian_scores = []
         
-        for box, cls in zip(self.boxes, self.clss):
+        # Extrai as detecções do modelo
+        results = self.model(im0)[0]  # Obtém as detecções do modelo YOLO
+        
+        # Extrai boxes, scores e classes
+        boxes = results.boxes.xyxy.cpu().numpy()  # Coordenadas das bounding boxes
+        scores = results.boxes.conf.cpu().numpy()  # Confidências
+        classes = results.boxes.cls.cpu().numpy()  # Classes
+        
+        # Processa cada detecção
+        for box, score, cls in zip(boxes, scores, classes):
             x1, y1, x2, y2 = map(int, box)
+            cls = int(cls)
             if cls in [3, 4, 5, 9]:  # Classes de veículos: car, van, truck, motor
                 vehicle_boxes.append([x1, y1, x2, y2])
+                vehicle_scores.append(score)
             elif cls in [0, 1]:  # Classes de pedestres: pedestrian, people
                 pedestrian_boxes.append([x1, y1, x2, y2])
+                pedestrian_scores.append(score)
+
+        # Converte para numpy arrays
+        vehicle_boxes = np.array(vehicle_boxes)
+        pedestrian_boxes = np.array(pedestrian_boxes)
+        vehicle_scores = np.array(vehicle_scores)
+        pedestrian_scores = np.array(pedestrian_scores)
+
+        # Adiciona scores às bounding boxes
+        if len(vehicle_boxes) > 0:
+            vehicle_boxes = np.column_stack((vehicle_boxes, vehicle_scores))
+        if len(pedestrian_boxes) > 0:
+            pedestrian_boxes = np.column_stack((pedestrian_boxes, pedestrian_scores))
+
+        # Atualiza os trackers
+        vehicle_tracks = self.vehicle_tracker.update(vehicle_boxes, im0)
+        pedestrian_tracks = self.pedestrian_tracker.update(pedestrian_boxes, im0)
 
         # Desenha as demarcações das vagas e verifica ocupação
         for region in self.json:
@@ -267,8 +344,9 @@ class ParkingManagement(BaseSolution):
 
                 # Verifica se a vaga está ocupada
                 is_occupied = False
-                for box in vehicle_boxes:
-                    if self.is_in_parking_spot(box, region["points"]):
+                for track in vehicle_tracks:
+                    x1, y1, x2, y2, track_id = track
+                    if self.is_in_parking_spot([x1, y1, x2, y2], region["points"]):
                         is_occupied = True
                         break
 
@@ -281,13 +359,15 @@ class ParkingManagement(BaseSolution):
         self.pr_info["Occupancy"] = fs
         self.pr_info["Available"] = es
 
-        # Desenha as bounding boxes dos veículos
-        for box in vehicle_boxes:
-            x1, y1, x2, y2 = box
+        # Desenha as bounding boxes dos veículos com IDs únicos
+        for track in vehicle_tracks:
+            is_in_free_area = False
+            x1, y1, x2, y2, track_id = map(int, track)
             xc, yc = int((x1 + x2) / 2), int((y1 + y2) / 2)
 
             # Verifica se o veículo está na free_area
             if free_area is not None and cv2.pointPolygonTest(free_area, (xc, yc), False) >= 0:
+                is_in_free_area = True
                 cars_in_free_area += 1
 
             # Verifica se o veículo está em uma vaga
@@ -299,22 +379,49 @@ class ParkingManagement(BaseSolution):
             
             if is_parked:
                 color = self.vehicle_parked_color
-                label = f"Parked - Vehicle {vehicle_id}"
+                label = f"Parked - Vehicle {track_id}"
                 cv2.circle(im0, (xc, yc), radius=5, color=color, thickness=-1)
                 cv2.putText(im0, label, (xc + 10, yc), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-            else:
+            elif is_in_free_area:
                 color = self.vehicle_color
-                label = f"Vehicle {vehicle_id}"
+                label = f"Vehicle {track_id}"
                 cv2.rectangle(im0, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(im0, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            vehicle_id += 1
 
-        # Desenha as bounding boxes dos pedestres
-        for box in pedestrian_boxes:
-            x1, y1, x2, y2 = box
-            color = self.pedestrian_color
+        # Desenha as bounding boxes dos pedestres com IDs únicos
+        for track in pedestrian_tracks:
+            x1, y1, x2, y2, track_id = map(int, track)
+            xc, yc = int((x1 + x2) / 2), int((y1 + y2) / 2)
+            
+            # Calcula a velocidade do pedestre
+            speed = self.calculate_speed(track_id, (xc, yc))
+            
+            # Verifica se o pedestre está correndo usando um critério mais robusto
+            is_running = speed > self.speed_threshold
+            
+            # Atualiza o status do pedestre
+            if is_running:
+                if track_id not in self.running_pedestrians:
+                    self.running_pedestrians.add(track_id)
+                color = self.pedestrian_danger_color
+                label = f"Pedestrian {track_id} - Running ({speed:.1f} px/s)"
+            else:
+                if track_id in self.running_pedestrians:
+                    self.running_pedestrians.remove(track_id)
+                color = self.pedestrian_color
+                label = f"Pedestrian {track_id} - Walking ({speed:.1f} px/s)"
+            
+            # Desenha a bounding box e o label
             cv2.rectangle(im0, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(im0, "Pedestrian", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            cv2.putText(im0, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # Desenha o centro do pedestre e uma linha indicando a direção do movimento
+            cv2.circle(im0, (xc, yc), radius=3, color=color, thickness=-1)
+            
+            # Desenha a linha de direção do movimento se houver histórico suficiente
+            if len(self.pedestrian_positions[track_id]) >= 2:
+                prev_pos = self.pedestrian_positions[track_id][-2]
+                cv2.line(im0, (prev_pos[0], prev_pos[1]), (xc, yc), color, 1)
 
         # Exibe informações de estacionamento
         cv2.putText(
@@ -341,5 +448,18 @@ class ParkingManagement(BaseSolution):
                 cv2.LINE_AA,
             )
             cv2.polylines(im0, [free_area], isClosed=True, color=(0, 255, 0), thickness=2)
+
+        # Exibe informações de pedestres correndo
+        if len(self.running_pedestrians) > 0:
+            cv2.putText(
+                im0,
+                f"Running Pedestrians: {len(self.running_pedestrians)}",
+                (10, 90),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                self.pedestrian_danger_color,
+                2,
+                cv2.LINE_AA,
+            )
 
         return im0

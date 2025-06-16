@@ -7,15 +7,15 @@ from parking import ParkingManagement
 video_path = "ufba_odonto.mp4"  # Substitua pelo caminho do vídeo se necessário
 # video_path = False
 if video_path:
-    stream = cv2.VideoCapture("/home/exati/Documentos/UFBA/live-parkinglot-cctv-yolo11/videos/" + video_path)
+    stream = cv2.VideoCapture("bboxes_videos/" + video_path)
 else:
     stream = CamGear(source='https://www.youtube.com/watch?v=EPKWu223XEg', stream_mode=True, logging=True).start()
 
 # Initialize parking management object
 parking_manager =  ParkingManagement(
     model="yolo11s_visdrone.pt",# path to model file
-    classes=[0, 1, 3, 4, 5, 9],  # 0 para pedestres, 2 para carros
-    json_file=("/home/exati/Documentos/UFBA/live-parkinglot-cctv-yolo11/bboxes_videos/" + video_path + ".json") if video_path else "stream_bounding_boxes.json",  # path to parking annotations file
+    classes=[0, 2, 3, 4, 5, 9],  # 0 para pedestres, 2 para carros
+    json_file=("bboxes_videos/" + video_path + ".json") if video_path else "stream_bounding_boxes.json",  # path to parking annotations file
 )
 
 def jump_to_time(stream, time_in_seconds):
@@ -34,9 +34,9 @@ while True:
     else:
         im0 = stream.read()
 
-    # count += 1
-    # if count % 2 != 0:
-    #     continue
+    count += 1
+    if count % 2 != 0:
+        continue
     im0 = cv2.resize(im0, (1020, 500))
     im0 = parking_manager.process_data(im0)
     cv2.imshow("im0", im0)
@@ -45,7 +45,7 @@ while True:
         jump_to_time(stream, 100)  
     if key == ord('k'):  
         jump_to_time(stream, 250)  
-    elif key == 27:
+    elif key == ord('q'):
         break
 
 if video_path:
