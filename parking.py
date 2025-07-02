@@ -178,6 +178,8 @@ class ParkingManagement(BaseSolution):
         with open(self.json_file) as f:
             self.json = json.load(f)
 
+        self.model.to('cpu')  #
+
         self.pr_info = {"Occupancy": 0, "Available": 0}  # dictionary for parking information
 
         self.arc = (0, 255, 0)  # available region color
@@ -246,6 +248,8 @@ class ParkingManagement(BaseSolution):
         Returns:
             np.ndarray: A imagem anotada.
         """
+        start_total = time.time()
+
         self.extract_tracks(im0)  # Realiza a inferência e extrai as detecções
         es, fs = 0, 0  # Vagas disponíveis e ocupadas
         annotator = Annotator(im0, self.line_width)  # Inicializa o anotador
@@ -572,5 +576,8 @@ class ParkingManagement(BaseSolution):
         # for idx, (track_id, suspect_index) in enumerate(suspect_indices):
         #     text = f"ID: {track_id} | Suspicion: {suspect_index:.2f} - c: {c:.2f}, i: {i:.2f}"
         #     cv2.putText(im0, text, (start_x, start_y + 30 * (idx + 1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        end_total = time.time()  # Fim do tempo total
+        print(f"Tempo total de processamento do frame: {(end_total - start_total) * 1000:.2f} ms")
 
         return im0
