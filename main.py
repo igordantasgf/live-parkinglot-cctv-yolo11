@@ -38,7 +38,7 @@ while True:
     count += 1
     if count % 2 != 0:
         continue
-    im0 = cv2.resize(im0, (1020, 500))
+    im0 = cv2.resize(im0, (1280, 720))
     im0 = parking_manager.process_data(im0)
     cv2.imshow("im0", im0)
     key = cv2.waitKey(1) & 0xFF
