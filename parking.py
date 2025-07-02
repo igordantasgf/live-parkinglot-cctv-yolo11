@@ -196,7 +196,9 @@ class ParkingManagement(BaseSolution):
 
         self.car_timers = {}  # Dicionário para rastrear o tempo de cada veículo na free_area
         self.car_moving_indices = {}  # Dicionário para armazenar o índice de cada veículo
-        self.T = 40  # Tempo inicial em segundos antes de começar a incrementar o índice
+        self.T = 10  # Tempo inicial em segundos antes de começar a incrementar o índice
+        self.wc = 0.1  # Fator de crescimento do índice de suspeita para carros
+        self.wi = 0.5  # Peso para fator de ocupação das vagas de estacionamento
 
 
     def check_intersection(self, ped_box, car_box):
@@ -409,9 +411,9 @@ class ParkingManagement(BaseSolution):
 
         # Inicializa variáveis para o cálculo do índice de suspeita
         total_vagas = len([region for region in self.json if "points" in region])  # Número total de vagas
-        c = 1 - (self.pr_info["Available"] / total_vagas)  # Calcula o fator "c" baseado nas vagas disponíveis
+        i = self.pr_info["Available"] / total_vagas  # Calcula o fator "i" baseado nas vagas disponíveis
         suspect_indices = []  # Lista para armazenar os índices de suspeita e IDs dos veículos
-        w1 = 3.3 # expoente para controlar curvatura de crescimento do índice de suspeita
+        w1 = 0.5 # expoente para controlar curvatura de crescimento do índice de suspeita
 
         # Atualiza o loop para veículos na free_area
         for track in vehicle_tracks:
@@ -433,14 +435,21 @@ class ParkingManagement(BaseSolution):
                 else:
                     self.car_moving_indices[track_id] = 0
 
-                i = self.car_moving_indices[track_id]
+                c = self.car_moving_indices[track_id]
 
                 # Calcula o índice de suspeita
                 if (elapsed_time < self.T):
-                    suspect_index = i
-                    suspect_indices.append((track_id, i))
+                    suspect_index = c
+                    suspect_indices.append((track_id, suspect_index))
                 else: # t >= T
-                    suspect_index = min(1, i + (1-i) * (i ** (1 / w1)) * c )
+                    # ------------------------------------------------------
+                    #       Fórmula para calcular o índice de suspeita
+                    # ------------------------------------------------------
+                    #
+                    suspect_index = min(1, (c *  w1) * i )
+                    # suspect_index = min(1, c * (self.wc + i * self.wi)/ self.wc + self.wi)
+                    #
+                    # ------------------------------------------------------
                     suspect_indices.append((track_id, suspect_index))
 
                 # Desenha a bounding box do veículo com o índice de suspeita
