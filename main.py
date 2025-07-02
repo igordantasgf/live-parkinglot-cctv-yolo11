@@ -7,7 +7,7 @@ from parking import ParkingManagement
 video_path = "ufba_odonto.mp4"  # Substitua pelo caminho do vídeo se necessário
 # video_path = False
 if video_path:
-    stream = cv2.VideoCapture("bboxes_videos/" + video_path)
+    stream = cv2.VideoCapture("videos/" + video_path)
 else:
     stream = CamGear(source='https://www.youtube.com/watch?v=EPKWu223XEg', stream_mode=True, logging=True).start()
 
@@ -26,6 +26,7 @@ def jump_to_time(stream, time_in_seconds):
         print(f"Redirecionado para {time_in_seconds} segundos.")
 
 count = 0
+i = 1
 while True:
     if video_path:
         ret, im0 = stream.read()
@@ -43,8 +44,14 @@ while True:
     key = cv2.waitKey(1) & 0xFF
     if key == ord('j'):  
         jump_to_time(stream, 100)  
+    if key == ord('i'):  
+        jump_to_time(stream, 120) 
     if key == ord('k'):  
         jump_to_time(stream, 250)  
+    elif key == ord('p'):  # Salva a imagem corrente
+        cv2.imwrite(f"current_frame_{i}.jpg", im0)
+        i += 1
+        print(f"Imagem salva como 'current_frame{i}.jpg'")
     elif key == ord('q'):
         break
 

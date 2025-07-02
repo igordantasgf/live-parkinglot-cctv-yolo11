@@ -185,7 +185,7 @@ class ParkingManagement(BaseSolution):
         self.dc = (255, 0, 189)  # centroid color for each box
         
         # Inicializa o DeepSORT para tracking de pedestres e veículos
-        self.pedestrian_tracker = DeepSORT(max_age=30, min_hits=1, iou_threshold=0.01)
+        self.pedestrian_tracker = DeepSORT(max_age=30, min_hits=1, iou_threshold=0.5)
         self.vehicle_tracker = DeepSORT(max_age=30, min_hits=3, iou_threshold=0.5)
         
         # Cores para bounding boxes
@@ -196,16 +196,8 @@ class ParkingManagement(BaseSolution):
 
         self.car_timers = {}  # Dicionário para rastrear o tempo de cada veículo na free_area
         self.car_moving_indices = {}  # Dicionário para armazenar o índice de cada veículo
-        self.T = 20  # Tempo inicial em segundos antes de começar a incrementar o índice
+        self.T = 40  # Tempo inicial em segundos antes de começar a incrementar o índice
 
-        # Sistema de detecção de velocidade
-        self.pedestrian_positions = {}  # Dicionário para armazenar posições anteriores
-        self.pedestrian_speeds = {}  # Dicionário para armazenar velocidades
-        self.fps = 11.5  # FPS real baseado nos dados de processamento (~87ms por frame)
-        self.speed_threshold = 15  # Limiar de velocidade em pixels por frame (ajustado para ~1.3 pixels por frame)
-        self.running_pedestrians = set()  # Conjunto de pedestres correndo
-        self.speed_history_size = 3  # Reduzido para 3 posições para ser mais responsivo
-        self.min_speed_duration = 5  # Número mínimo de frames para confirmar que está correndo
 
     def check_intersection(self, ped_box, car_box):
         """
@@ -228,46 +220,6 @@ class ParkingManagement(BaseSolution):
         xc, yc = int((x1 + x2) / 2), int((y1 + y2) / 2)
         pts_array = np.array(region_points, dtype=np.int32).reshape((-1, 1, 2))
         return cv2.pointPolygonTest(pts_array, (xc, yc), False) >= 0
-
-    def calculate_speed(self, track_id, current_pos):
-        """
-        Calcula a velocidade do pedestre em pixels por segundo
-        """
-        if track_id not in self.pedestrian_positions:
-            self.pedestrian_positions[track_id] = []
-            self.pedestrian_speeds[track_id] = 0
-            self.pedestrian_positions[track_id].append(current_pos)
-            return 0
-
-        # Adiciona a posição atual
-        self.pedestrian_positions[track_id].append(current_pos)
-        
-        # Mantém apenas as últimas N posições
-        if len(self.pedestrian_positions[track_id]) > self.speed_history_size:
-            self.pedestrian_positions[track_id].pop(0)
-
-        # Calcula a velocidade média usando as últimas posições
-        if len(self.pedestrian_positions[track_id]) >= 2:
-            positions = self.pedestrian_positions[track_id]
-            total_distance = 0
-            for i in range(1, len(positions)):
-                prev_pos = positions[i-1]
-                curr_pos = positions[i]
-                distance = np.sqrt((curr_pos[0] - prev_pos[0])**2 + (curr_pos[1] - prev_pos[1])**2)
-                total_distance += distance
-            
-            # Calcula a velocidade em pixels por segundo
-            avg_distance = total_distance / (len(positions) - 1)
-            speed = avg_distance * self.fps
-            
-            # Aplica um filtro de média móvel para suavizar as velocidades
-            if track_id in self.pedestrian_speeds:
-                speed = 0.7 * speed + 0.3 * self.pedestrian_speeds[track_id]
-            
-            self.pedestrian_speeds[track_id] = speed
-            return speed
-        
-        return 0
 
     def process_data(self, im0):
         """
@@ -340,7 +292,7 @@ class ParkingManagement(BaseSolution):
         for region in self.json:
             if "points" in region:
                 region_polygon = np.array(region["points"], dtype=np.int32).reshape((-1, 1, 2))
-                cv2.polylines(im0, [region_polygon], isClosed=True, color=self.arc, thickness=2)
+                # cv2.polylines(im0, [region_polygon], isClosed=True, color=self.arc, thickness=2)
 
                 # Verifica se a vaga está ocupada
                 is_occupied = False
@@ -354,6 +306,10 @@ class ParkingManagement(BaseSolution):
                     fs += 1  # Incrementa vagas ocupadas
                 else:
                     es += 1  # Incrementa vagas disponíveis
+
+            if "free_area" in region:
+                region_polygon = np.array(region["free_area"], dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(im0, [region_polygon], isClosed=True, color=self.arc, thickness=1)
 
         # Atualiza informações de estacionamento
         self.pr_info["Occupancy"] = fs
@@ -379,9 +335,9 @@ class ParkingManagement(BaseSolution):
             
             if is_parked:
                 color = self.vehicle_parked_color
-                label = f"Parked - Vehicle {track_id}"
+                label = f"Parked - {track_id}"
                 cv2.circle(im0, (xc, yc), radius=5, color=color, thickness=-1)
-                cv2.putText(im0, label, (xc + 10, yc), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                cv2.putText(im0, label, (xc + 10, yc), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             elif is_in_free_area:
                 color = self.vehicle_color
                 label = f"Vehicle {track_id}"
@@ -393,73 +349,164 @@ class ParkingManagement(BaseSolution):
             x1, y1, x2, y2, track_id = map(int, track)
             xc, yc = int((x1 + x2) / 2), int((y1 + y2) / 2)
             
-            # Calcula a velocidade do pedestre
-            speed = self.calculate_speed(track_id, (xc, yc))
-            
-            # Verifica se o pedestre está correndo usando um critério mais robusto
-            is_running = speed > self.speed_threshold
-            
-            # Atualiza o status do pedestre
-            if is_running:
-                if track_id not in self.running_pedestrians:
-                    self.running_pedestrians.add(track_id)
-                color = self.pedestrian_danger_color
-                label = f"Pedestrian {track_id} - Running ({speed:.1f} px/s)"
-            else:
-                if track_id in self.running_pedestrians:
-                    self.running_pedestrians.remove(track_id)
-                color = self.pedestrian_color
-                label = f"Pedestrian {track_id} - Walking ({speed:.1f} px/s)"
+            color = self.pedestrian_color
+            label = f"Pedestrian {track_id}"
             
             # Desenha a bounding box e o label
-            cv2.rectangle(im0, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(im0, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            overlay = im0.copy()  # Reinicializa o overlay antes de cada operação
+            text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+            text_width, text_height = text_size[0], text_size[1]
+            background_start = (x1, y1 - text_height - 10)
+            background_end = (x1 + text_width + 10, y1 - 5)
+
+            cv2.rectangle(overlay, background_start, background_end, (0, 0, 0), -1)  # Desenha o retângulo preto
+            cv2.addWeighted(overlay, 0.7, im0, 0.3, 0, im0)  # Aplica opacidade ao fundo
+
+            # Adiciona o texto sobre o fundo
+            cv2.putText(im0, label, (x1 + 5, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             
             # Desenha o centro do pedestre e uma linha indicando a direção do movimento
             cv2.circle(im0, (xc, yc), radius=3, color=color, thickness=-1)
             
-            # Desenha a linha de direção do movimento se houver histórico suficiente
-            if len(self.pedestrian_positions[track_id]) >= 2:
-                prev_pos = self.pedestrian_positions[track_id][-2]
-                cv2.line(im0, (prev_pos[0], prev_pos[1]), (xc, yc), color, 1)
-
         # Exibe informações de estacionamento
+        overlay = im0.copy()
+        text_size = cv2.getTextSize(f"Occupied: {self.pr_info['Occupancy']}, Available: {self.pr_info['Available']}", cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
+        text_width, text_height = text_size[0], text_size[1]
+        background_start = (10, 10)
+        background_end = ( text_width, 20 + text_height*2)
+        cv2.rectangle(overlay, background_start, background_end, (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.7, im0, 0.3, 0, im0)
         cv2.putText(
             im0,
             f"Occupied: {self.pr_info['Occupancy']}, Available: {self.pr_info['Available']}",
-            (10, 30),
+            (20, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (104, 31, 17),
+            0.7,
+            (128, 179, 255),
             2,
             cv2.LINE_AA,
         )
 
-        # Exibe informações da free_area
+        # Exibe informações da free_area com fundo preto opaco
         if free_area is not None:
+            overlay = im0.copy()
+            text_size = cv2.getTextSize(f"Cars in Free Area: {cars_in_free_area}", cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
+            text_width, text_height = text_size[0], text_size[1]
+            background_start = (10, 40)
+            background_end = (10 + text_width + 20, 60 + text_height)
+            # cv2.rectangle(overlay, background_start, background_end, (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.7, im0, 0.3, 0, im0)
             cv2.putText(
                 im0,
                 f"Cars in Free Area: {cars_in_free_area}",
-                (10, 60),
+                (20, 60),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
+                0.7,
+                (153, 255, 102),
                 2,
                 cv2.LINE_AA,
             )
-            cv2.polylines(im0, [free_area], isClosed=True, color=(0, 255, 0), thickness=2)
 
-        # Exibe informações de pedestres correndo
-        if len(self.running_pedestrians) > 0:
-            cv2.putText(
-                im0,
-                f"Running Pedestrians: {len(self.running_pedestrians)}",
-                (10, 90),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                self.pedestrian_danger_color,
-                2,
-                cv2.LINE_AA,
-            )
+        # Inicializa variáveis para o cálculo do índice de suspeita
+        total_vagas = len([region for region in self.json if "points" in region])  # Número total de vagas
+        c = 1 - (self.pr_info["Available"] / total_vagas)  # Calcula o fator "c" baseado nas vagas disponíveis
+        suspect_indices = []  # Lista para armazenar os índices de suspeita e IDs dos veículos
+        w1 = 3.3 # expoente para controlar curvatura de crescimento do índice de suspeita
+
+        # Atualiza o loop para veículos na free_area
+        for track in vehicle_tracks:
+            x1, y1, x2, y2, track_id = map(int, track)
+            xc, yc = int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+            # Verifica se o veículo está na free_area
+            if free_area is not None and cv2.pointPolygonTest(free_area, (xc, yc), False) >= 0:
+                cars_in_free_area += 1
+
+                # Calcula o índice de movimentação "i" para o veículo
+                if track_id not in self.car_timers:
+                    self.car_timers[track_id] = time.time()  # Inicializa o tempo de entrada na free_area
+                    self.car_moving_indices[track_id] = 0  # Inicializa o índice de movimentação
+
+                elapsed_time = (time.time() - self.car_timers[track_id])
+                if elapsed_time > self.T:  # Apenas incrementa o índice após ultrapassar o limiar T
+                    self.car_moving_indices[track_id] = (elapsed_time - self.T) / self.T  # Normaliza o índice de movimentação
+                else:
+                    self.car_moving_indices[track_id] = 0
+
+                i = self.car_moving_indices[track_id]
+
+                # Calcula o índice de suspeita
+                if (elapsed_time < self.T):
+                    suspect_index = i
+                    suspect_indices.append((track_id, i))
+                else: # t >= T
+                    suspect_index = min(1, i + (1-i) * (i ** (1 / w1)) * c )
+                    suspect_indices.append((track_id, suspect_index))
+
+                # Desenha a bounding box do veículo com o índice de suspeita
+                color = self.vehicle_color
+                label = f"Vehicle {track_id} - Suspicion: {suspect_index:.2f} - time: {elapsed_time:.2f}s"
+
+                # Adiciona o fundo preto opaco acima do bounding box
+                overlay = im0.copy()  # Reinicializa o overlay antes de cada operação
+
+                # Calcula o tamanho do texto
+                text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                text_width, text_height = text_size[0], text_size[1]
+                background_start = (x1, y1 - text_height - 10)
+                background_end = (x1 + text_width + 10, y1 - 5)
+
+                # Adiciona o fundo preto opaco acima do bounding box
+                cv2.rectangle(overlay, background_start, background_end, (0, 0, 0), -1)
+                cv2.addWeighted(overlay, 0.7, im0, 0.3, 0, im0)
+
+                # Adiciona o texto sobre o fundo
+                cv2.putText(im0, label, (x1 + 5, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+                # Define o texto e a cor com base no nível de suspeita
+                if suspect_index > 0.9:
+                    suspicion_text = "Suspicious"
+                    suspicion_color = (0, 0, 255)  # Vermelho
+                elif suspect_index > 0.7:
+                    suspicion_text = "Reasonably suspicious"
+                    suspicion_color = (0, 165, 255)  # Laranja
+                elif suspect_index > 0.4:
+                    suspicion_text = "Slightly suspicious"
+                    suspicion_color = (0, 255, 255)  # Amarelo
+                else:
+                    suspicion_text = None
+
+                # Exibe o texto abaixo do bounding box, no lado esquerdo
+                if suspicion_text:
+                    overlay = im0.copy()  # Reinicializa o overlay antes de desenhar o fundo do texto
+                    text_size = cv2.getTextSize(suspicion_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                    text_width, text_height = text_size[0], text_size[1]
+                    background_start = (x1, y2 + 10)
+                    background_end = (x1 + text_width + 10, y2 + 10 + text_height + 10)
+
+                    # Adiciona o fundo preto opaco
+                    cv2.rectangle(overlay, background_start, background_end, (0, 0, 0), -1)
+                    cv2.addWeighted(overlay, 0.7, im0, 0.3, 0, im0)
+
+                    # Adiciona o texto sobre o fundo
+                    cv2.putText(im0, suspicion_text, (x1 + 5, y2 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, suspicion_color, 2)
+
+        overlay = im0.copy()
+
+        # # Exibe a tabela dinâmica no canto superior direito com fundo cinza opaco
+        # start_x, start_y = im0.shape[1] - 350, 30  # Posição inicial da tabela
+        # table_width, table_height = 280, 30 * (len(suspect_indices) + 1)  # Dimensões da tabela
+        # background_color = (50, 50, 50)  # Cor do fundo (cinza escuro)
+        # opacity = 0.7  # Opacidade do fundo
+
+        # cv2.rectangle(overlay, (start_x, start_y), (start_x + table_width, start_y + table_height), background_color, -1)
+        # cv2.addWeighted(overlay, opacity, im0, 1 - opacity, 0, im0)
+
+        # # Adiciona o título da tabela
+        # cv2.putText(im0, "Suspicion Table", (start_x + 10, start_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # for idx, (track_id, suspect_index) in enumerate(suspect_indices):
+        #     text = f"ID: {track_id} | Suspicion: {suspect_index:.2f} - c: {c:.2f}, i: {i:.2f}"
+        #     cv2.putText(im0, text, (start_x, start_y + 30 * (idx + 1)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         return im0
